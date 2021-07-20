@@ -268,7 +268,7 @@ fn main() {
 
 pub fn submit_public_key_to_tezos(public_key: Option<BigInt>) {
     let public_key_string = public_key.unwrap().to_hex();
-    let client = reqwest::Client::new();
+    let _client = reqwest::Client::new();
 
     println!("submitting group public key to tezons: group key{:?}", &public_key_string);
 }

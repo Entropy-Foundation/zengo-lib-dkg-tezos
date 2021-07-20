@@ -86,6 +86,8 @@ fn main() {
         uuid.clone(),
     );
 
+    println!("round 0 response:{:?}", &round0_ans_vec);
+
     let mut j = 0;
     let mut signers_vec: Vec<usize> = Vec::new();
     for i in 1..=THRESHOLD + 1 {
@@ -127,6 +129,8 @@ fn main() {
         "round1",
         uuid.clone(),
     );
+
+    println!("round 1 response:{:?}", &round1_ans_vec);
 
     let mut j = 0;
     let mut bc1_vec: Vec<SignBroadcastPhase1> = Vec::new();
@@ -192,6 +196,8 @@ fn main() {
         }
     }
 
+    
+
     let round2_ans_vec = poll_for_p2p(
         &client,
         party_num_int,
@@ -200,6 +206,8 @@ fn main() {
         "round2",
         uuid.clone(),
     );
+
+    println!("round 2 response:{:?}", &round2_ans_vec);
 
     let mut m_b_gamma_rec_vec: Vec<MessageB> = Vec::new();
     let mut m_b_w_rec_vec: Vec<MessageB> = Vec::new();
@@ -260,6 +268,8 @@ fn main() {
         "round3",
         uuid.clone(),
     );
+    println!("round 3 response:{:?}", &round3_ans_vec);
+
     let mut delta_vec: Vec<FE> = Vec::new();
     format_vec_from_reads(
         &round3_ans_vec,
@@ -288,6 +298,8 @@ fn main() {
         uuid.clone(),
     );
 
+    println!("round 4 response:{:?}", &round4_ans_vec);
+
     let mut decommit_vec: Vec<SignDecommitPhase1> = Vec::new();
     format_vec_from_reads(
         &round4_ans_vec,
@@ -308,6 +320,7 @@ fn main() {
 
     // we assume the message is already hashed (by the signer).
     let message_bn = BigInt::from_bytes(message);
+    println!("Message in bigint{:?}",&message_bn);
     let local_sig =
         LocalSignature::phase5_local_sig(&sign_keys.k_i, &message_bn, &R, &sigma, &y_sum);
 
