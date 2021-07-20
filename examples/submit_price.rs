@@ -249,6 +249,7 @@ fn tezos_sign(bytes: &str,sk:&str)
     let encrypted = bytes[2..3] == "e";
 
     let constructed_key = bs58_decode(sk.to_string(), 4);
+    
 }
 
 
