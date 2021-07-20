@@ -335,6 +335,7 @@ fn main() {
     }
 
     let message_bn = HSha256::create_hash(&[&BigInt::from_bytes(message)]);
+    println!("message hash:{:?}", &message_bn);
     let input_stage6 = SignStage6Input {
         R_dash_vec: R_dash_vec.clone(),
         R: res_stage5.R.clone(),

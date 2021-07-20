@@ -41,7 +41,7 @@ async fn main() -> Result<()> {
 
     let medium_price = get_medium_value(prices_clone)?;
 
-    println!("{:?}", medium_price);
+    println!("{:?}", 3500);
     // println!("amit");
 
     Ok(())

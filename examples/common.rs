@@ -217,5 +217,6 @@ pub fn check_sig(r: &FE, s: &FE, msg: &BigInt, pk: &GE) {
     let secp_sig = Signature::parse_slice(compact.as_slice()).unwrap();
 
     let is_correct = verify(&msg, &secp_sig, &pk);
+    println!("msg:{:?}, signature:{:?}, pk:{:?}", &msg, &secp_sig, &pk );
     assert!(is_correct);
 }

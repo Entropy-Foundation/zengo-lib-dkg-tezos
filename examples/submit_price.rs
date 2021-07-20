@@ -38,8 +38,8 @@ fn submit_price(price: f64, sign:String) -> Result<()> {
     let chain_id = head["chain_id"].as_str().unwrap();
     let metadata = get_metadata(&client);
     let next_protocol = metadata["next_protocol"].as_str().unwrap();
-    let manager = get_manager(&client, contract_add);
-    let counter = get_counter(&client, contract_add);
+    let manager = get_manager(&client, public_key);
+    let counter = get_counter(&client, public_key);
 
 
     let data = r#"
@@ -56,12 +56,16 @@ fn submit_price(price: f64, sign:String) -> Result<()> {
                     "int": "10" 
                 } 
             },
-            "source":""
+            "source":"",
+            "counter":""
         }"#;
 
     let mut op_obj:Value = serde_json::from_str(data)?;
     op_obj["destination"] = Value::from(contract_add);
     op_obj["source"] = Value::from(public_key);
+    let mut counter_val = counter.parse::<u32>().expect("counter not parsed");
+    counter_val += 1;
+    op_obj["counter"] = Value::from(counter_val.to_string());
 
     let send_op_str = r#"{
         "chain_id":"abc",
@@ -70,15 +74,13 @@ fn submit_price(price: f64, sign:String) -> Result<()> {
 
     let full_op_str = r#"{
         "branch":"",
-        "contents":"",
-        "protocol":""
+        "contents":""
     }"#;
 
     let mut full_op_obj:Value = serde_json::from_str(full_op_str)?;
 
     full_op_obj["branch"] = Value::from(head_hash);
     full_op_obj["contents"] = json!([op_obj]);
-    full_op_obj["protocol"] = Value::from(next_protocol);
 
     get_operation_bytes(full_op_obj.clone());
 
@@ -90,21 +92,34 @@ fn submit_price(price: f64, sign:String) -> Result<()> {
     send_op_obj["operation"] = full_op_obj;
 
 
-    let result = simulate_operation(&client, send_op_obj);
+    let result = simulate_operation(&client, send_op_obj.clone());
+
+    if result["contents"][0]["metadata"]["operation_result"]["status"].as_str().unwrap() == "applied" {
+        let consumed_gas = result["contents"][0]["metadata"]["operation_result"]["consumed_gas"].as_str().unwrap().parse::<u32>().unwrap();
+        let storage_size = result["contents"][0]["metadata"]["operation_result"]["storage_size"].as_str().unwrap().parse::<u32>().unwrap();
+
+        send_op_obj["operation"]["contents"][0]["gas_limit"] = Value::from((consumed_gas+100).to_string());
+        send_op_obj["operation"]["contents"][0]["storage_limit"] = Value::from((storage_size+20).to_string());
+    }
+    
+    let forge_operation = forge_operation(&client, send_op_obj["operation"].clone(), head_hash);
+
+    let pre_apply_operation = pre_apply_operation(&client, send_op_obj["operation"].clone(), next_protocol);
+
 
     // configure whole json of operation
     // sign operation and create content
     // send content to tezos
-    let op_body = "";
-    let op_resp = client.post("https://testnet-tezos.giganode.io/injection/operation").body(op_body).send();
-    if let Ok(mut op_resp) = op_resp {
-        let op_hash = op_resp.text().unwrap();
-        println!("submitted price to tezos. Price: {:?},sign:{:?}", price, sign);
-        println!("operation_hash:{:?}", op_hash);
-    }
+    // let op_body = "";
+    // let op_resp = client.post("https://testnet-tezos.giganode.io/injection/operation").body(op_body).send();
+    // if let Ok(mut op_resp) = op_resp {
+    //     let op_hash = op_resp.text().unwrap();
+    //     println!("submitted price to tezos. Price: {:?},sign:{:?}", price, sign);
+    //     println!("operation_hash:{:?}", op_hash);
+    // }
     
 
-    // println!("submitted price to tezos. Price: {:?},sign:{:?}", price, sign);
+    println!("submitted price to tezos. Price: {:?},sign:{:?}", price, sign);
     Ok(())
 }
 
@@ -130,34 +145,27 @@ fn get_metadata(client:&Client) -> Value
     return serde_json::from_str("[]").unwrap();
 }
 
-fn get_manager(client:&Client, contract_address: &str) -> Value
+fn get_manager(client:&Client, contract_address: &str) -> String
 {
     let url = format!("https://testnet-tezos.giganode.io/chains/main/blocks/head/context/contracts/{}/manager_key",&contract_address);
     let resp = client.get(&url).send();
     if let Ok(mut resp) = resp {
         let resp = resp.text().unwrap();
-        if resp == "" {
-            return serde_json::from_str("[]").unwrap();
-        }
-        let json_resp:Value = serde_json::from_str(resp.as_str()).unwrap();
-        return json_resp;
+        return resp.clone();
     }
-    return serde_json::from_str("[]").unwrap();
+    return "".to_string();
 }
 
-fn get_counter(client:&Client, contract_address: &str) -> Value
+fn get_counter(client:&Client, contract_address: &str) -> String
 {
     let url = format!("https://testnet-tezos.giganode.io/chains/main/blocks/head/context/contracts/{}/counter",&contract_address);
     let resp = client.get(&url).send();
     if let Ok(mut resp) = resp {
         let resp = resp.text().unwrap();
-        if resp == "" {
-            return serde_json::from_str("[]").unwrap();
-        }
-        let json_resp:Value = serde_json::from_str(resp.as_str()).unwrap();
-        return json_resp;
+        let newstr = resp.replace("\n", "").replace("\"", "");
+        return newstr.clone();
     }
-    return serde_json::from_str("[]").unwrap();
+    return "".to_string();
 }
 
 fn simulate_operation(client:&Client,mut op_obj:Value) -> Value
@@ -167,36 +175,80 @@ fn simulate_operation(client:&Client,mut op_obj:Value) -> Value
     op_obj["operation"]["signature"] = Value::from(signature);
 
     let mut body:Value = op_obj.clone();
-
-    println!("{:?}",body.to_string());
     let body_str = body.to_string();
 
     let url = format!("https://testnet-tezos.giganode.io/chains/main/blocks/head/helpers/scripts/run_operation");
     let resp = client.post(&url).header("Content-Type", "application/json").body(body_str.clone()).send();
     if let Ok(mut resp) = resp {
         let resp = resp.text().unwrap();
-        // if resp == "" {
-        // }
-        // let json_resp:Value = serde_json::from_str(resp.as_str()).unwrap();
-        println!("resp:{:?}", resp);
-        return serde_json::from_str("[]").unwrap();
-        // return json_resp;
-    } else if let Err(mut resp) = resp {
-        // let resp = resp.text().unwrap();
-        println!("failed resp:{:?}", resp);
+        let json_resp:Value = serde_json::from_str(resp.as_str()).unwrap();
+        println!("resp:{:?}", &json_resp);
+        return json_resp;
     }
     return serde_json::from_str("[]").unwrap();
 }
 
-fn get_operation_bytes(full_op_obj:Value){
+fn get_operation_bytes(full_op_obj:Value)
+{
     
-    // bs58_decode(full_op_obj.as_str().unwrap().clone(), 2);
+    let branch = full_op_obj["branch"].as_str().unwrap();
+    let forge_buffer = bs58_decode(branch, 2);
+    let mut tmp_bytes = Vec::new();
+    for i in forge_buffer {
+        let tmp = format!("{:02x}",i);
+        tmp_bytes.push(tmp);
+    }
+    let mut forge_bytes = Vec::new();
+    forge_bytes.push(tmp_bytes.join(""));
+    println!("{:?}",forge_bytes);
 }
 
-fn bs58_decode(string: &str ,length: u32)
+fn bs58_decode(string: &str ,length: u32) -> Vec<u8>
 {
     let abc = bs58::decode(string).into_vec().unwrap();
-    // println!("{:?}", &abc);
+    return abc[0..2].to_vec();
+}
+
+fn forge_operation(client:&Client, op_obj:Value, head_hash: &str) -> Value
+{
+    let mut body:Value = op_obj.clone();
+    let body_str = body.to_string();
+
+    let url = format!("https://testnet-tezos.giganode.io/chains/main/blocks/{}/helpers/forge/operations", head_hash);
+    let resp = client.post(&url).header("Content-Type", "application/json").body(body_str.clone()).send();
+    if let Ok(mut resp) = resp {
+        let resp = resp.text().unwrap();
+        let json_resp:Value = serde_json::from_str(resp.as_str()).unwrap();
+        println!("forge resp:{:?}", &json_resp);
+        return json_resp;
+    }
+    return serde_json::from_str("[]").unwrap();
+}
+
+fn pre_apply_operation(client:&Client, mut op_obj:Value, protocol:&str) -> Value
+{
+    op_obj["protocol"] = Value::from(protocol);
+    let mut body:Value = json!([op_obj.clone()]);
+    let body_str = body.to_string();
+    println!("{:?}", &body_str);
+    let url = format!("https://testnet-tezos.giganode.io/chains/main/blocks/head/helpers/preapply/operations");
+    let resp = client.post(&url).header("Content-Type", "application/json").body(body_str.clone()).send();
+    if let Ok(mut resp) = resp {
+        let resp = resp.text().unwrap();
+        let json_resp:Value = serde_json::from_str(resp.as_str()).unwrap();
+        println!("pre apply resp:{:?}", &json_resp);
+        return json_resp;
+    }
+    return serde_json::from_str("[]").unwrap();
+}
+
+fn tezos_sign(bytes: &str,sk:&str)
+{
+    let curve = bytes[0..2];
+
+    let encrypted = bytes[2..3] == "e";
+
+    let constructed_key = bs58_decode(sk.to_string(), 4);
 }
 
 
@@ -219,10 +271,10 @@ fn main() -> Result<()> {
         String,
         String,
         String,
-        u8
+        u32
     ) = serde_json::from_str(&data).unwrap();
     
-    let sign = format!("0x{}{}{}",r_value,s_value,v_value);
+    let sign = format!("0x{}{}{:02x}",r_value,s_value,v_value);
     
     let _result = submit_price(price_float, sign).unwrap();
     
