@@ -1,13 +1,20 @@
 use serde_json::{Value, json};
 use reqwest::{self, Client};
+use regex::Regex;
+use crypto::{blake2b::Blake2b, mac::Mac,ed25519};
 
 use core::f64;
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync >>;
 use std::{array, collections::HashMap, env, fs, vec};
 
+struct TezosSignature {
+    sbytes: String,
+    prefix_sign: String
+}
+
 fn submit_price(price: f64, sign:String) -> Result<()> {
     let client = reqwest::Client::new();
-    // let resp = client.get("https://testnet-tezos.giganode.io/chains/main/blocks").send();
+    // let resp = client.get("https://florencenet.smartpy.io/chains/main/blocks").send();
     // if let Ok(mut resp) = resp {
     //     let rstring = resp.text().unwrap();
     //     let resp:Value = serde_json::from_str(rstring.as_str())?;
@@ -15,7 +22,7 @@ fn submit_price(price: f64, sign:String) -> Result<()> {
     //     let block_hash_value = &resp[0][0];
     //     let block_hash = block_hash_value.as_str().unwrap();
 
-    //     let url_for_contract = format!("https://testnet-tezos.giganode.io/chains/main/blocks/{}/context/contracts/{}/storage",block_hash,contract_add);
+    //     let url_for_contract = format!("https://florencenet.smartpy.io/chains/main/blocks/{}/context/contracts/{}/storage",block_hash,contract_add);
 
     //     println!("url:{}",&url_for_contract);
 
@@ -104,28 +111,30 @@ fn submit_price(price: f64, sign:String) -> Result<()> {
     
     let forge_operation = forge_operation(&client, send_op_obj["operation"].clone(), head_hash);
 
+    let signops = tezos_sign(forge_operation.as_str().unwrap(), private_key);
+
+    send_op_obj["operation"]["signature"] = Value::from(signops.prefix_sign);
+
     let pre_apply_operation = pre_apply_operation(&client, send_op_obj["operation"].clone(), next_protocol);
 
+    if pre_apply_operation[0]["contents"][0]["metadata"]["operation_result"]["status"] == "applied" {
+        let body = format!("{:?}",signops.sbytes);
+        let op_resp = client.post("https://florencenet.smartpy.io/injection/operation").body(body).send();
+        if let Ok(mut op_resp) = op_resp {
+            let op_hash = op_resp.text().unwrap();
+            println!("submitted price to tezos. Price: {:?},sign:{:?}", price, sign);
+            println!("operation_hash:{:?}", op_hash);
+        }
+    } else {
+        println!("Unable to submit the transaction");
+    }
 
-    // configure whole json of operation
-    // sign operation and create content
-    // send content to tezos
-    // let op_body = "";
-    // let op_resp = client.post("https://testnet-tezos.giganode.io/injection/operation").body(op_body).send();
-    // if let Ok(mut op_resp) = op_resp {
-    //     let op_hash = op_resp.text().unwrap();
-    //     println!("submitted price to tezos. Price: {:?},sign:{:?}", price, sign);
-    //     println!("operation_hash:{:?}", op_hash);
-    // }
-    
-
-    println!("submitted price to tezos. Price: {:?},sign:{:?}", price, sign);
     Ok(())
 }
 
 fn get_head(client:&Client) -> Value
 {
-    let resp = client.get("https://testnet-tezos.giganode.io/chains/main/blocks/head/header").send();
+    let resp = client.get("https://florencenet.smartpy.io/chains/main/blocks/head/header").send();
     if let Ok(mut resp) = resp {
         let resp = resp.text().unwrap();
         let json_resp:Value = serde_json::from_str(resp.as_str()).unwrap();
@@ -136,7 +145,7 @@ fn get_head(client:&Client) -> Value
 
 fn get_metadata(client:&Client) -> Value
 {
-    let resp = client.get("https://testnet-tezos.giganode.io/chains/main/blocks/head/metadata").send();
+    let resp = client.get("https://florencenet.smartpy.io/chains/main/blocks/head/metadata").send();
     if let Ok(mut resp) = resp {
         let resp = resp.text().unwrap();
         let json_resp:Value = serde_json::from_str(resp.as_str()).unwrap();
@@ -147,7 +156,7 @@ fn get_metadata(client:&Client) -> Value
 
 fn get_manager(client:&Client, contract_address: &str) -> String
 {
-    let url = format!("https://testnet-tezos.giganode.io/chains/main/blocks/head/context/contracts/{}/manager_key",&contract_address);
+    let url = format!("https://florencenet.smartpy.io/chains/main/blocks/head/context/contracts/{}/manager_key",&contract_address);
     let resp = client.get(&url).send();
     if let Ok(mut resp) = resp {
         let resp = resp.text().unwrap();
@@ -158,7 +167,7 @@ fn get_manager(client:&Client, contract_address: &str) -> String
 
 fn get_counter(client:&Client, contract_address: &str) -> String
 {
-    let url = format!("https://testnet-tezos.giganode.io/chains/main/blocks/head/context/contracts/{}/counter",&contract_address);
+    let url = format!("https://florencenet.smartpy.io/chains/main/blocks/head/context/contracts/{}/counter",&contract_address);
     let resp = client.get(&url).send();
     if let Ok(mut resp) = resp {
         let resp = resp.text().unwrap();
@@ -177,7 +186,7 @@ fn simulate_operation(client:&Client,mut op_obj:Value) -> Value
     let mut body:Value = op_obj.clone();
     let body_str = body.to_string();
 
-    let url = format!("https://testnet-tezos.giganode.io/chains/main/blocks/head/helpers/scripts/run_operation");
+    let url = format!("https://florencenet.smartpy.io/chains/main/blocks/head/helpers/scripts/run_operation");
     let resp = client.post(&url).header("Content-Type", "application/json").body(body_str.clone()).send();
     if let Ok(mut resp) = resp {
         let resp = resp.text().unwrap();
@@ -193,28 +202,23 @@ fn get_operation_bytes(full_op_obj:Value)
     
     let branch = full_op_obj["branch"].as_str().unwrap();
     let forge_buffer = bs58_decode(branch, 2);
-    let mut tmp_bytes = Vec::new();
-    for i in forge_buffer {
-        let tmp = format!("{:02x}",i);
-        tmp_bytes.push(tmp);
-    }
-    let mut forge_bytes = Vec::new();
-    forge_bytes.push(tmp_bytes.join(""));
-    println!("{:?}",forge_bytes);
+    let forge_bytes = buf2hex(forge_buffer.clone());
 }
 
 fn bs58_decode(string: &str ,length: u32) -> Vec<u8>
 {
-    let abc = bs58::decode(string).into_vec().unwrap();
-    return abc[0..2].to_vec();
+    let abc = bs58::decode(string).with_check(None).into_vec().unwrap();
+    println!("bs58decode: {:?}",&abc);
+    println!("bs58decode: {:?}",&abc[length as usize..].to_vec());
+    return abc[length as usize..].to_vec();
 }
 
 fn forge_operation(client:&Client, op_obj:Value, head_hash: &str) -> Value
 {
     let mut body:Value = op_obj.clone();
     let body_str = body.to_string();
-
-    let url = format!("https://testnet-tezos.giganode.io/chains/main/blocks/{}/helpers/forge/operations", head_hash);
+    println!("forge body string:{:?}", &body_str);
+    let url = format!("https://florencenet.smartpy.io/chains/main/blocks/{}/helpers/forge/operations", head_hash);
     let resp = client.post(&url).header("Content-Type", "application/json").body(body_str.clone()).send();
     if let Ok(mut resp) = resp {
         let resp = resp.text().unwrap();
@@ -231,7 +235,7 @@ fn pre_apply_operation(client:&Client, mut op_obj:Value, protocol:&str) -> Value
     let mut body:Value = json!([op_obj.clone()]);
     let body_str = body.to_string();
     println!("{:?}", &body_str);
-    let url = format!("https://testnet-tezos.giganode.io/chains/main/blocks/head/helpers/preapply/operations");
+    let url = format!("https://florencenet.smartpy.io/chains/main/blocks/head/helpers/preapply/operations");
     let resp = client.post(&url).header("Content-Type", "application/json").body(body_str.clone()).send();
     if let Ok(mut resp) = resp {
         let resp = resp.text().unwrap();
@@ -242,14 +246,102 @@ fn pre_apply_operation(client:&Client, mut op_obj:Value, protocol:&str) -> Value
     return serde_json::from_str("[]").unwrap();
 }
 
-fn tezos_sign(bytes: &str,sk:&str)
+fn tezos_sign(bytes: &str,sk:&str) -> TezosSignature
 {
-    let curve = bytes[0..2];
+    let curve = &bytes[0..2];
 
-    let encrypted = bytes[2..3] == "e";
+    let encrypted = &bytes[2..3] == "e";
 
-    let constructed_key = bs58_decode(sk.to_string(), 4);
+    let constructed_key = bs58_decode(sk.clone(), 4); 
+
+    let secret_key;
+    // if constructed_key.len() == 64 {
+        secret_key = constructed_key;
+    // } else {
+    //     let (secret, public) = ed25519::keypair(&constructed_key);
+    //     secret_key = secret.to_vec();
+    // }
+
+    // later this can be used to decrypt secret with password
+    // if encrypted {
+
+    // }
+
     
+
+    let byteshex = hex2buf(bytes);
+    // bb.push(3);//magic bytes
+    let mut bb = [3].to_vec();
+    for i in byteshex {
+        bb.push(i);
+    }
+
+    println!("buffer: {:?}",&bb);
+    let mut b2b = Blake2b::new(32);
+    b2b.input(&bb);
+    let byte_hash = b2b.result().code().to_vec();
+
+    println!("secret key: {:?}",&secret_key);
+    
+    let signature = ed25519::signature(&byte_hash, &secret_key).to_vec();
+
+    println!("signature: {:?}",&signature);
+
+    let sbytes = format!("{}{}",bytes, buf2hex(signature.clone()));
+
+    let prefix_hash = bs58_encode(signature.clone(), [9, 245, 205, 134, 18].to_vec());
+    println!("prefixhash: {:?}", &prefix_hash);
+    
+    
+    println!("byte hash: {:?}",byte_hash);
+    println!("signature bytes: {:?}",sbytes);
+
+    TezosSignature {
+        sbytes: sbytes.to_string(),
+        prefix_sign: prefix_hash.to_string()
+    }
+    
+}
+
+fn bs58_encode(payload:Vec<u8>, prefix_arg:Vec<u8>) -> String
+{
+    let mut actual_payload = prefix_arg;
+    for i in payload {
+        actual_payload.push(i);
+    }
+    let _input = buf2hexarr(actual_payload.clone());
+    
+    bs58::encode(actual_payload).with_check().into_string()
+}
+
+fn hex2buf(hex:&str) -> Vec<u8>
+{
+    let re = Regex::new(r"([\da-f]{2})").unwrap();
+    let buff:Vec<u8> = re.captures_iter(hex).map(|c| u8::from_str_radix(c.get(1).unwrap().as_str(),16).unwrap()).collect();   
+    buff
+}
+
+fn buf2hex(buf:Vec<u8>) -> String
+{
+    let mut tmp_bytes = Vec::new();
+    for i in buf {
+        let tmp = format!("{:02x}",i);
+        tmp_bytes.push(tmp);
+    }
+    let strng = tmp_bytes.join("");
+
+    return strng
+}
+
+fn buf2hexarr(buf:Vec<u8>) 
+{
+    let mut tmp_bytes = Vec::new();
+    for i in buf {
+        let tmp = format!("{:02x}",i);
+        tmp_bytes.push(tmp);
+    }
+    println!("buf2hexarr: {:?}", &tmp_bytes);
+    // tmp_bytes.to_vec().clone();
 }
 
 
