@@ -2,6 +2,7 @@ use tokio::{task};
 use futures::future::join_all;
 use serde_json::Value;
 use reqwest;
+use crypto::{digest::Digest, sha2::Sha256};
 
 use core::f64;
 use std::{sync::{Arc, Mutex}};
@@ -41,7 +42,10 @@ async fn main() -> Result<()> {
 
     let medium_price = get_medium_value(prices_clone)?;
 
-    println!("{:?}", 3500);
+    let mut sha = Sha256::new();
+    sha.input_str("3500");
+    let encmsg = sha.result_str();
+    println!("{}", encmsg);
     // println!("amit");
 
     Ok(())
